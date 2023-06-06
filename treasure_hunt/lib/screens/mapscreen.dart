@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'dart:async';
+import '../models/game.dart';
+import '../models/game_dto.dart';
 import 'scorepage.dart';
+import 'dart:ui' as ui;
+import 'package:flutter/services.dart';
+import 'package:geocoding/geocoding.dart';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -12,13 +16,52 @@ class MapScreen extends StatefulWidget {
 }
 
 class _MapScreenState extends State<MapScreen> {
-  Position? position;
+  Placemark address = Placemark(name: "Redmond");
   bool _paused = false;
+  final List<LatLng> randomCoordinates = [];
+  LatLng _start = LatLng(47.67, -122.117);
+  GoogleMapController? mapController;
+  late MapType _currentMapType = MapType.normal;
+  final gameInfo = NewGameDTO();
+  BitmapDescriptor jewelIcon =
+      BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure);
 
   @override
   void initState() {
-    super.initState();
+    _setIconJewel(3);
     getCurrentCoordinates();
+    super.initState();
+  }
+
+  Future<Uint8List> getBytesFromAsset(int width) async {
+    ByteData data = await rootBundle.load('images/jewel_icon.png');
+    ui.Codec codec = await ui.instantiateImageCodec(data.buffer.asUint8List(),
+        targetWidth: width);
+    ui.FrameInfo fi = await codec.getNextFrame();
+    return (await fi.image.toByteData(format: ui.ImageByteFormat.png))!
+        .buffer
+        .asUint8List();
+  }
+
+  _setIconJewel(int width) async {
+    final Uint8List markerIcon = await getBytesFromAsset(width);
+    return BitmapDescriptor.fromBytes(markerIcon);
+  }
+
+  void getCurrentCoordinates() async {
+    Position position = await Geolocator.getCurrentPosition(
+      desiredAccuracy: LocationAccuracy.high,
+    );
+    _start = LatLng(position.latitude, position.longitude);
+
+    try {
+      List<Placemark> placemarks = await placemarkFromCoordinates(
+        position.latitude,
+        position.longitude,
+      );
+      address = placemarks[0];
+    } catch (err) {}
+    print(address);
   }
 
   void _pauseGame() {
@@ -33,24 +76,8 @@ class _MapScreenState extends State<MapScreen> {
     });
   }
 
-  void getCurrentCoordinates() async {
-    position = await Geolocator.getCurrentPosition(
-      desiredAccuracy: LocationAccuracy.high,
-    );
-    setState(() {});
-  }
-
-  Completer<GoogleMapController> _controller = Completer();
-  late MapType _currentMapType = MapType.normal;
-
-  LatLng? _lastMapPosition;
-
   void _onMapCreated(GoogleMapController controller) {
-    _controller.complete(controller);
-  }
-
-  void _onCameraMove(CameraPosition position) {
-    _lastMapPosition = position.target;
+    mapController = controller;
   }
 
   void _onMapTypeButtonPressed() {
@@ -63,13 +90,21 @@ class _MapScreenState extends State<MapScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<Position>(
-      future:
-          Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high),
+    NewGame game = NewGame(
+        date: DateTime.now(),
+        score: 0,
+        treasureCoordinates:
+            NewGame.generateRandomCoordinates(_start, jewelIcon),
+        name: NewGame.generateJourneyName()
+        //myIcon:
+        );
+    return StreamBuilder<Position>(
+      stream: Geolocator.getPositionStream(),
       builder: (BuildContext context, AsyncSnapshot<Position> snapshot) {
         if (snapshot.hasData) {
-          final Position position = snapshot.data!;
-          return mapDisplay(position);
+          //NewGame.generateRandomCoordinates(_start);
+          game.updateScore(snapshot.data, game.treasureCoordinates);
+          return mapDisplay(game);
         } else if (snapshot.hasError) {
           return Text('Error: ${snapshot.error}');
         } else {
@@ -84,15 +119,18 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
-  Widget mapDisplay(Position position) {
-    final LatLng _center = LatLng(position.latitude, position.longitude);
-    final Set<Marker> _markers = {
-      Marker(markerId: MarkerId("source"), position: _center)
-    };
-    // Use the position object to access the location coordinates
+  Widget mapDisplay(NewGame game) {
+    LatLng _center = LatLng(_start.latitude, _start.longitude);
+    final Set<Marker> _markers = game.treasureCoordinates;
+
     return Scaffold(
       appBar: AppBar(
-        title: Text('Treasure Hunt Map'),
+        backgroundColor: Color.fromRGBO(21, 22, 103, 1),
+        automaticallyImplyLeading: false,
+        title: Text(
+          '${game.name}',
+          style: TextStyle(fontFamily: 'Papyrus', fontSize: 25),
+        ),
         actions: <Widget>[
           IconButton(
             icon: Icon(Icons.map),
@@ -100,7 +138,9 @@ class _MapScreenState extends State<MapScreen> {
           ),
           IconButton(
             icon: Icon(Icons.pause),
-            onPressed: pauseButton,
+            onPressed: () {
+              pauseButton(game);
+            },
           )
         ],
       ),
@@ -110,40 +150,52 @@ class _MapScreenState extends State<MapScreen> {
             onMapCreated: _onMapCreated,
             initialCameraPosition: CameraPosition(
               target: _center,
-              zoom: 15.0,
+              zoom: 13.0,
             ),
             mapType: _currentMapType,
             markers: _markers,
-            onCameraMove: _onCameraMove,
+            myLocationEnabled: true,
+            myLocationButtonEnabled: true,
+          ),
+          Row(
+            children: [ScoreTally(game.score), CoordinateDisplay(_center)],
           ),
         ],
       ),
     );
   }
 
-  void pauseButton() {
+  void pauseButton(game) {
     AlertDialog alert = AlertDialog(
-      title: Text("Paused"),
+      actionsAlignment: MainAxisAlignment.center,
+      title: Text(
+        "Paused",
+        textAlign: TextAlign.center,
+      ),
       actions: [
-        TextButton(
-          child: Text('Quit Game'),
-          onPressed: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                  builder: (context) => const ScorePage(
-                        score: 100,
-                      )),
-            );
-          },
-        ),
         TextButton(
           child: Text('Continue'),
           onPressed: () {
             _resumeGame();
             Navigator.of(context).pop();
           },
-        )
+        ),
+        TextButton(
+          child: Text('End Game'),
+          onPressed: () async {
+            gameInfo.date = DateTime.now();
+            gameInfo.score = game.score;
+            gameInfo.name = game.name;
+            gameInfo.uploadToFirestore();
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                  builder: (context) => ScorePage(
+                        game: game,
+                      )),
+            );
+          },
+        ),
       ],
     );
 
@@ -152,6 +204,60 @@ class _MapScreenState extends State<MapScreen> {
       builder: (BuildContext context) {
         return alert;
       },
+    );
+  }
+
+  Widget ScoreTally(score) {
+    return Container(
+      padding: EdgeInsets.all(5),
+      child: Container(
+        decoration:
+            BoxDecoration(color: Color.fromRGBO(21, 22, 103, 1), boxShadow: [
+          BoxShadow(
+              color: Colors.black.withOpacity(1),
+              spreadRadius: 2,
+              blurRadius: 5,
+              offset: Offset(0, 3))
+        ]),
+        padding: EdgeInsets.symmetric(vertical: 10, horizontal: 45),
+        child: Text(
+          'Score\n$score',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 20,
+            fontFamily: 'Papyrus',
+            fontWeight: FontWeight.bold,
+          ),
+          textAlign: TextAlign.center,
+        ),
+      ),
+    );
+  }
+
+  Widget CoordinateDisplay(LatLng position) {
+    return Container(
+      padding: EdgeInsets.all(5),
+      child: Container(
+        decoration:
+            BoxDecoration(color: Color.fromRGBO(21, 22, 103, 1), boxShadow: [
+          BoxShadow(
+              color: Colors.black.withOpacity(1),
+              spreadRadius: 2,
+              blurRadius: 5,
+              offset: Offset(0, 3))
+        ]),
+        padding: EdgeInsets.symmetric(vertical: 10, horizontal: 25),
+        child: Text(
+          'Location: ${address.locality}\n(${position.latitude.toStringAsFixed(2)}, ${position.longitude.toStringAsFixed(2)})',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 20,
+            fontFamily: 'Papyrus',
+            fontWeight: FontWeight.bold,
+          ),
+          textAlign: TextAlign.center,
+        ),
+      ),
     );
   }
 }
